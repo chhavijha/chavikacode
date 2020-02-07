@@ -1,0 +1,149 @@
+#pip install flask-ngrok
+#pip install json-logic-qubit
+
+
+
+
+from flask_ngrok import run_with_ngrok
+from flask import Flask,jsonify,request
+from json_logic import jsonLogic
+import json
+import os
+
+app = Flask(__name__)
+run_with_ngrok(app)
+
+
+import pandas as pd
+from pandas.io.json import json_normalize
+data=pd.read_json("https://greendeck-datasets-2.s3.amazonaws.com/netaporter_gb_similar.json",lines=True)
+
+
+#Fetching the respective fields from the given data
+p=data["price"]
+b=data["brand"]
+sim=data["similar_products"]
+id=data["_id"]
+l=len(data)
+
+
+@app.route('/json-example', methods=['POST']) 
+def json_example():
+    
+    #Fetching the respected parameters from the request json
+    req_data = request.get_json()
+    query=req_data['query_type']             
+    operand1 = req_data['filters']['operand1']
+    operator = req_data['filters']['operator']
+    operand2 = req_data['filters']['operand2']
+    comp_dis= req_data['filters']
+    #comp_op=req_data['filters'][0]["operator"]
+    #comp_oper2=req_data['filters'][0]["operand2"]
+    
+    #Based on the query type, respective functions are called.
+    switcher = { 
+        "discounted_products_list": json_disc(query,operand1,operator,operand2), 
+        "discounted_products_count|avg_discount":json_count_avg(query,operand1,operator,operand2),
+        "expensive_list": json_exp(query,operand1,operator,operand2),
+        "competition_discount_diff_list":"56"
+    } 
+    s=switcher.get(query)
+    
+    return s
+
+#If the query type is discounted_products_list, this function will be called
+def json_disc(query,operand1,operator,operand2):
+
+    List=[]
+    List_sum=[]
+    
+    #Fetching the offer and regular price for each object and calculating discount
+    for i in range(0,l):
+      op=p[i]["offer_price"]
+      rp=p[i]["regular_price"]
+      disc=rp["value"]-op["value"]
+      res=(disc/rp["value"])*100.0 
+      result = {}
+
+      #If operand1 is 'discount',compare the calculated discount with the operand2 from the request and add the respective product_ids to the List 
+      if operand1 == 'discount':
+        if jsonLogic({operator:[res,operand2]}) :
+          List.append(id[i]["$oid"])
+          List_sum.append(disc)
+
+      #If operand1 is 'brand.name',add the respective product_ids to the List and compute the sum of discounts for the selected brand
+      elif operand1 == 'brand.name':
+        if operator in ("==","!="):
+          if b[i]["name"] == operand2:
+            List.append(id[i]["$oid"])
+            disc=p[i]["regular_price"]["value"]-p[i]["offer_price"]["value"]
+            List_sum.append(disc)
+      else :
+        return 'Invalid operand1 value'
+
+    #For query_type 'discounted_products_count|avg_discount', return the List of product_ids and sum of discounts on the selected list.
+    if query == 'discounted_products_count|avg_discount':
+      return List,List_sum
+
+    #For query_type 'discounted_products_list',return the List of product_ids    
+    elif query == 'discounted_products_list':
+      result[query] = List
+      return result
+      # return '''
+      #      The product lists : {}'''.format(List)
+
+
+#If the query type is 'discounted_products_count|avg_discount', this function will be called
+def json_count_avg(query,operand1,operator,operand2):
+  if query == 'discounted_products_count|avg_discount': 
+    List,List_sum=json_disc(query,operand1,operator,operand2)  #json_disc function is called to retrieve the list of product_ids and sum of the discounts
+    count=len(List)
+    s=sum(List_sum)
+    try:
+        avg=s/count
+    except ZeroDivisionError as e:
+        print("Invalid")
+    return { "discounted_products_count": count, "avg_dicount": avg }
+    # return '''
+    #         The count of products is {} and the average discount: {}'''.format(count,avg)
+
+
+#If the query type is 'expensive_list', this function will be called.
+def json_exp(query,operand1,operator,operand2) :
+  List=[]
+  result = {}
+  for i in range(0,l):
+    self_bask=p[i]["offer_price"]["value"]           #Fetch the value of NAP product's offer_price
+    comp_bask=sim[i]["meta"]["avg_price"]["basket"]  #Fetch the value of basket price of competitor
+    if self_bask > comp_bask:                        # If offer_price > basket price, add the product id to the list
+      if operand1=="brand.name":
+        if b[i]["name"] == disc_val:
+          List.append(id[i]["$oid"])
+      elif not operand1:
+        List.append(id[i]["$oid"])
+  result[query] = List
+  return result
+  # return '''
+  #          The product list with greater NAP value are: {}'''.format(List)
+
+
+#If the query type is 'competition_discount_diff_list', this function will be called.
+def json_comp(comp_dis):
+
+  List=[]
+  f=comp_dis[0][operand1]
+  f_op=comp_dis[0][operator]
+  f_op2=comp_dis[0][operand2]
+  # if oper == '5d0cc7b68a66a100014acdb0':
+  #   for i in range(0,l):
+  #     far=sim[i]["website_results"]["5da94f4e6d97010001f81d72"]["meta"]["avg_price"]["offer"]
+  #     self_offer=p[i]["offer_price"]["value"]
+  #     if self_offer > (far+0.1*far):
+  #       List.append(id[i]["$oid"])
+  # else:
+  #   return 'No farfetch'
+  # return '''
+  #          The product list with greater NAP value then Farfetch are: {}'''.format(List)
+
+
+app.run()
